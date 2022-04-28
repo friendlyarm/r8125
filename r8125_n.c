@@ -10912,6 +10912,10 @@ rtl8125_get_mac_address(struct net_device *dev)
         }
 
         if (!is_valid_ether_addr(mac_addr)) {
+                eth_platform_get_mac_address(tp_to_dev(tp), mac_addr);
+        }
+
+        if (!is_valid_ether_addr(mac_addr)) {
                 netif_err(tp, probe, dev, "Invalid ether addr %pM\n",
                           mac_addr);
                 eth_hw_addr_random(dev);
