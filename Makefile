@@ -124,8 +124,10 @@ ifneq ($(KERNELRELEASE),)
 		EXTRA_CFLAGS += -DETHTOOL_LEGACY_2500baseX
 	endif
 else
+
+ifeq ($(KSRC),)
 	BASEDIR := /lib/modules/$(shell uname -r)
-	KERNELDIR ?= $(BASEDIR)/build
+	KSRC ?= $(BASEDIR)/build
 	PWD :=$(shell pwd)
 	DRIVERDIR := $(shell find $(BASEDIR)/kernel/drivers/net/ethernet -name realtek -type d)
 	ifeq ($(DRIVERDIR),)
@@ -155,6 +157,7 @@ else
 	if($(KREV) < $(3)) {print 0} else { print 1 } \
 	}}}}}' \
 	)
+endif
 
 .DEFAULT_GOAL := modules
 
@@ -179,25 +182,25 @@ print_vars:
 .PHONY:modules
 modules:
 #ifeq ($(call kver_ge,5,0,0),1)
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+	$(MAKE) -C $(KSRC) M=$(PWD) modules
 #else
-#	$(MAKE) -C $(KERNELDIR) SUBDIRS=$(PWD) modules
+#	$(MAKE) -C $(KSRC) SUBDIRS=$(PWD) modules
 #endif
 
 .PHONY:clean
 clean:
 #ifeq ($(call kver_ge,5,0,0),1)
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+	$(MAKE) -C $(KSRC) M=$(PWD) clean
 #else
-#	$(MAKE) -C $(KERNELDIR) SUBDIRS=$(PWD) clean
+#	$(MAKE) -C $(KSRC) SUBDIRS=$(PWD) clean
 #endif
 
 .PHONY:install
 install:
 #ifeq ($(call kver_ge,5,0,0),1)
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) INSTALL_MOD_DIR=$(RTKDIR) modules_install
+	$(MAKE) -C $(KSRC) M=$(PWD) INSTALL_MOD_DIR=$(RTKDIR) modules_install
 #else
-#	$(MAKE) -C $(KERNELDIR) SUBDIRS=$(PWD) INSTALL_MOD_DIR=$(RTKDIR) modules_install
+#	$(MAKE) -C $(KSRC) SUBDIRS=$(PWD) INSTALL_MOD_DIR=$(RTKDIR) modules_install
 #endif
 
 endif
