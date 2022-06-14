@@ -12908,13 +12908,20 @@ static int rtl8125_alloc_irq(struct rtl8125_private *tp)
         const int len = sizeof(tp->irq_tbl[0].name);
 
 #if defined(RTL_USE_NEW_INTR_API)
-        for (i=0; i<tp->irq_nvecs; i++) {
+        for (i = 0; i < tp->irq_nvecs; i++) {
                 irq = &tp->irq_tbl[i];
                 if (tp->features & RTL_FEATURE_MSIX &&
                     tp->HwCurrIsrVer == 2)
                         irq->handler = rtl8125_interrupt_msix;
                 else
                         irq->handler = rtl8125_interrupt;
+
+                /*
+                 * rtl8125_init_napi: init 16, 18 for tx
+                 * rtl8125_interrupt_msix: handle 21 for link change
+                 */
+                if (!(i < tp->num_rx_rings || i == 16 || i == 18 || i == 21))
+                        continue;
 
                 r8125napi = &tp->r8125napi[i];
                 snprintf(irq->name, len, "%s-%d", dev->name, i);
