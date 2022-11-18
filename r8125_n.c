@@ -10941,6 +10941,32 @@ rtl8125_hw_address_set(struct net_device *dev, u8 mac_addr[MAC_ADDR_LEN])
 #endif //LINUX_VERSION_CODE >= KERNEL_VERSION(5,17,0)
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
+#include <linux/of_net.h>
+
+/* from upstream commit c7f5d105495a3 */
+static int eth_platform_get_mac_address(struct device *dev, u8 *mac_addr)
+{
+        const unsigned char *addr;
+        struct device_node *dp;
+
+        if (dev_is_pci(dev))
+                dp = pci_device_to_OF_node(to_pci_dev(dev));
+        else
+                dp = dev->of_node;
+
+        addr = NULL;
+        if (dp)
+                addr = of_get_mac_address(dp);
+
+        if (!addr)
+                return -ENODEV;
+
+        ether_addr_copy(mac_addr, addr);
+        return 0;
+}
+#endif
+
 static int
 rtl8125_get_mac_address(struct net_device *dev)
 {
