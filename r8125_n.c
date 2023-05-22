@@ -15044,23 +15044,18 @@ rtl8125_rx_v3_csum(struct rtl8125_private *tp,
 static inline void
 rtl8125_rx_csum(struct rtl8125_private *tp,
                 struct sk_buff *skb,
-                struct RxDesc *desc)
+                struct RxDesc *desc,
+                u32 opts1)
 {
         if (tp->InitRxDescType == RX_DESC_RING_TYPE_3)
                 rtl8125_rx_v3_csum(tp, skb, (struct RxDescV3 *)desc);
         else {
-                u32 opts1 = le32_to_cpu(rtl8125_rx_desc_opts1(tp, desc));
-                u32 opts2 = le32_to_cpu(rtl8125_rx_desc_opts2(tp, desc));
-
                 /* rx csum offload for RTL8125 */
-                if (((opts2 & RxV4F) && !(opts1 & RxIPF)) || (opts2 & RxV6F)) {
-                        if (((opts1 & RxTCPT) && !(opts1 & RxTCPF)) ||
-                            ((opts1 & RxUDPT) && !(opts1 & RxUDPF)))
-                                skb->ip_summed = CHECKSUM_UNNECESSARY;
-                        else
-                                skb->ip_summed = CHECKSUM_NONE;
-                } else
-                        skb->ip_summed = CHECKSUM_NONE;
+                if (((opts1 & RxTCPT) && !(opts1 & RxTCPF)) ||
+                    ((opts1 & RxUDPT) && !(opts1 & RxUDPF)))
+                        skb->ip_summed = CHECKSUM_UNNECESSARY;
+                else
+                        skb_checksum_none_assert(skb);
         }
 }
 
@@ -15283,7 +15278,7 @@ process_pkt:
 #endif
 
                         if (tp->cp_cmd & RxChkSum)
-                                rtl8125_rx_csum(tp, skb, desc);
+                                rtl8125_rx_csum(tp, skb, desc, status);
 
                         skb->dev = dev;
                         skb_put(skb, pkt_size);
