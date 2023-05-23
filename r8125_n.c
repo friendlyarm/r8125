@@ -13798,6 +13798,7 @@ rtl8125_mark_to_asic_v3(struct RxDescV3 *descv3,
 {
         u32 eor = le32_to_cpu(descv3->RxDescNormalDDWord4.opts1) & RingEnd;
 
+        dma_wmb();
         WRITE_ONCE(descv3->RxDescNormalDDWord4.opts1, cpu_to_le32(DescOwn | eor | rx_buf_sz));
 }
 
@@ -13811,6 +13812,7 @@ rtl8125_mark_to_asic(struct rtl8125_private *tp,
         else {
                 u32 eor = le32_to_cpu(desc->opts1) & RingEnd;
 
+                dma_wmb();
                 WRITE_ONCE(desc->opts1, cpu_to_le32(DescOwn | eor | rx_buf_sz));
         }
 }
@@ -13828,7 +13830,7 @@ rtl8125_map_to_asic(struct rtl8125_private *tp,
                 ((struct RxDescV3 *)desc)->addr = cpu_to_le64(mapping);
         else
                 desc->addr = cpu_to_le64(mapping);
-        wmb();
+
         rtl8125_mark_to_asic(tp, desc, rx_buf_sz);
 }
 
@@ -15136,33 +15138,38 @@ rtl8125_rx_interrupt(struct net_device *dev,
                      napi_budget budget)
 {
         unsigned int cur_rx, rx_left;
-        unsigned int delta, count = 0;
+        unsigned int delta, count;
         unsigned int entry;
         struct RxDesc *desc;
+        struct sk_buff *skb;
+        int pkt_size;
         u32 status;
-        u32 rx_quota;
         u64 rx_buf_phy_addr;
-        u32 ring_index = ring->index;
 
         assert(dev != NULL);
         assert(tp != NULL);
-
-        if (ring->RxDescArray == NULL)
+        if (unlikely(!ring->RxDescArray)) {
+                count = 0;
                 goto rx_out;
+        }
 
-        rx_quota = RTL_RX_QUOTA(budget);
         cur_rx = ring->cur_rx;
-        entry = cur_rx % ring->num_rx_desc;
-        desc = rtl8125_get_rxdesc(tp, ring->RxDescArray, entry);
         rx_left = ring->num_rx_desc + ring->dirty_rx - cur_rx;
-        rx_left = rtl8125_rx_quota(rx_left, (u32)rx_quota);
+        rx_left = rtl8125_rx_quota(rx_left, (u32)RTL_RX_QUOTA(budget));
 
-        for (; rx_left > 0; rx_left--) {
+        for (; rx_left > 0; rx_left--, cur_rx++) {
+                entry = cur_rx % ring->num_rx_desc;
+                desc = rtl8125_get_rxdesc(tp, ring->RxDescArray, entry);
+
                 status = le32_to_cpu(rtl8125_rx_desc_opts1(tp, desc));
                 if (status & DescOwn)
                         break;
 
-                rmb();
+                /* This barrier is needed to keep us from reading
+                 * any other fields out of the Rx descriptor until
+                 * we know the status of DescOwn
+                 */
+                dma_rmb();
 
                 if (unlikely(rtl8125_check_rx_desc_error(dev, tp, status) < 0)) {
                         if (netif_msg_rx_err(tp)) {
@@ -15173,129 +15180,118 @@ rtl8125_rx_interrupt(struct net_device *dev,
 
                         RTLDEV->stats.rx_errors++;
 
-                        if (dev->features & NETIF_F_RXALL)
-                                goto process_pkt;
-
-                        rtl8125_mark_to_asic(tp, desc, tp->rx_buf_sz);
-                } else {
-                        struct sk_buff *skb;
-                        int pkt_size;
-
-process_pkt:
-                        pkt_size = status & 0x00003fff;
-                        if (likely(!(dev->features & NETIF_F_RXFCS)))
-                                pkt_size -= ETH_FCS_LEN;
-
-                        /*
-                         * The driver does not support incoming fragmented
-                         * frames. They are seen as a symptom of over-mtu
-                         * sized frames.
-                         */
-                        if (unlikely(rtl8125_fragmented_frame(tp, status)) ||
-                            unlikely(pkt_size > tp->rx_buf_sz)) {
-                                RTLDEV->stats.rx_dropped++;
-                                RTLDEV->stats.rx_length_errors++;
+                        if (!(dev->features & NETIF_F_RXALL)) {
                                 rtl8125_mark_to_asic(tp, desc, tp->rx_buf_sz);
                                 continue;
                         }
+                }
 
-                        skb = ring->Rx_skbuff[entry];
+                pkt_size = status & 0x00003fff;
+                if (likely(!(dev->features & NETIF_F_RXFCS)))
+                        pkt_size -= ETH_FCS_LEN;
 
-                        if (!skb)
-                                break;
+                /*
+                 * The driver does not support incoming fragmented
+                 * frames. They are seen as a symptom of over-mtu
+                 * sized frames.
+                 */
+                if (unlikely(rtl8125_fragmented_frame(tp, status)) ||
+                    unlikely(pkt_size > tp->rx_buf_sz)) {
+                        RTLDEV->stats.rx_dropped++;
+                        RTLDEV->stats.rx_length_errors++;
+                        rtl8125_mark_to_asic(tp, desc, tp->rx_buf_sz);
+                        continue;
+                }
+
+                skb = ring->Rx_skbuff[entry];
+                if (!skb)
+                        break;
 
 #ifdef ENABLE_PTP_SUPPORT
-                        if (tp->EnablePtp) {
-                                u8 desc_type;
+                if (tp->EnablePtp) {
+                        u8 desc_type;
 
-                                desc_type = rtl8125_rx_desc_type(status);
-                                if (desc_type == RXDESC_TYPE_NEXT && rx_left > 0) {
-                                        u32 status_next;
-                                        struct RxDescV3 *desc_next;
-                                        unsigned int entry_next;
-                                        struct sk_buff *skb_next;
+                        desc_type = rtl8125_rx_desc_type(status);
+                        if (desc_type == RXDESC_TYPE_NEXT && rx_left > 0) {
+                                u32 status_next;
+                                struct RxDescV3 *desc_next;
+                                unsigned int entry_next;
+                                struct sk_buff *skb_next;
 
-                                        entry_next = (cur_rx + 1) % ring->num_rx_desc;
-                                        desc_next = (struct RxDescV3 *)rtl8125_get_rxdesc(tp, ring->RxDescArray, entry_next);
+                                entry_next = (cur_rx + 1) % ring->num_rx_desc;
+                                desc_next = (struct RxDescV3 *)rtl8125_get_rxdesc(tp, ring->RxDescArray, entry_next);
+                                rmb();
+                                status_next = le32_to_cpu(desc_next->RxDescNormalDDWord4.opts1);
+                                if (unlikely(status_next & DescOwn)) {
+                                        udelay(1);
                                         rmb();
                                         status_next = le32_to_cpu(desc_next->RxDescNormalDDWord4.opts1);
                                         if (unlikely(status_next & DescOwn)) {
-                                                udelay(1);
-                                                rmb();
-                                                status_next = le32_to_cpu(desc_next->RxDescNormalDDWord4.opts1);
-                                                if (unlikely(status_next & DescOwn)) {
-                                                        if (netif_msg_rx_err(tp)) {
-                                                                printk(KERN_ERR
-                                                                       "%s: Rx Next Desc ERROR. status = %08x\n",
-                                                                       dev->name, status_next);
-                                                        }
-                                                        break;
+                                                if (netif_msg_rx_err(tp)) {
+                                                        printk(KERN_ERR
+                                                               "%s: Rx Next Desc ERROR. status = %08x\n",
+                                                               dev->name, status_next);
                                                 }
+                                                break;
                                         }
+                                }
 
-                                        cur_rx++;
-                                        rx_left--;
-                                        desc_type = rtl8125_rx_desc_type(status_next);
-                                        if (desc_type == RXDESC_TYPE_PTP)
-                                                rtl8125_rx_ptp_pktstamp(tp, skb, desc_next);
-                                        else
-                                                WARN_ON(1);
+                                cur_rx++;
+                                rx_left--;
+                                desc_type = rtl8125_rx_desc_type(status_next);
+                                if (desc_type == RXDESC_TYPE_PTP)
+                                        rtl8125_rx_ptp_pktstamp(tp, skb, desc_next);
+                                else
+                                        WARN_ON(1);
 
-                                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry_next];
-                                        dma_unmap_single(tp_to_dev(tp), rx_buf_phy_addr,
-                                                         tp->rx_buf_sz, DMA_FROM_DEVICE);
-                                        skb_next = ring->Rx_skbuff[entry_next];
-                                        dev_kfree_skb_any(skb_next);
-                                        ring->Rx_skbuff[entry_next] = NULL;
-                                } else
-                                        WARN_ON(desc_type != RXDESC_TYPE_NORMAL);
-                        }
-#endif
-                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
-                        dma_sync_single_for_cpu(tp_to_dev(tp),
-                                                rx_buf_phy_addr, tp->rx_buf_sz,
-                                                DMA_FROM_DEVICE);
-
-                        if (rtl8125_try_rx_copy(tp, ring, &skb, pkt_size,
-                                                desc, tp->rx_buf_sz)) {
-                                ring->Rx_skbuff[entry] = NULL;
+                                rx_buf_phy_addr = ring->RxDescPhyAddr[entry_next];
                                 dma_unmap_single(tp_to_dev(tp), rx_buf_phy_addr,
                                                  tp->rx_buf_sz, DMA_FROM_DEVICE);
-                        } else {
-                                dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
-                                                           tp->rx_buf_sz, DMA_FROM_DEVICE);
-                        }
-
-#ifdef ENABLE_RSS_SUPPORT
-                        rtl8125_rx_hash(tp, (struct RxDescV3 *)desc, skb);
+                                skb_next = ring->Rx_skbuff[entry_next];
+                                dev_kfree_skb_any(skb_next);
+                                ring->Rx_skbuff[entry_next] = NULL;
+                        } else
+                                WARN_ON(desc_type != RXDESC_TYPE_NORMAL);
+                }
 #endif
 
-                        if (tp->cp_cmd & RxChkSum)
-                                rtl8125_rx_csum(tp, skb, desc, status);
+                rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
+                dma_sync_single_for_cpu(tp_to_dev(tp),
+                                        rx_buf_phy_addr, tp->rx_buf_sz,
+                                        DMA_FROM_DEVICE);
 
-                        skb->dev = dev;
-                        skb_put(skb, pkt_size);
-                        skb->protocol = eth_type_trans(skb, dev);
-
-                        if (skb->pkt_type == PACKET_MULTICAST)
-                                RTLDEV->stats.multicast++;
-
-                        if (rtl8125_rx_vlan_skb(tp, desc, skb) < 0)
-                                rtl8125_rx_skb(tp, skb, ring_index);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
-                        dev->last_rx = jiffies;
-#endif //LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
-                        RTLDEV->stats.rx_bytes += pkt_size;
-                        RTLDEV->stats.rx_packets++;
+                if (rtl8125_try_rx_copy(tp, ring, &skb, pkt_size,
+                                        desc, tp->rx_buf_sz)) {
+                        ring->Rx_skbuff[entry] = NULL;
+                        dma_unmap_single(tp_to_dev(tp), rx_buf_phy_addr,
+                                         tp->rx_buf_sz, DMA_FROM_DEVICE);
+                } else {
+                        dma_sync_single_for_device(tp_to_dev(tp), rx_buf_phy_addr,
+                                                   tp->rx_buf_sz, DMA_FROM_DEVICE);
                 }
 
-                cur_rx++;
-                entry = cur_rx % ring->num_rx_desc;
-                desc = rtl8125_get_rxdesc(tp, ring->RxDescArray, entry);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,37)
-                prefetch(desc);
+#ifdef ENABLE_RSS_SUPPORT
+                rtl8125_rx_hash(tp, (struct RxDescV3 *)desc, skb);
 #endif
+
+                if (tp->cp_cmd & RxChkSum)
+                        rtl8125_rx_csum(tp, skb, desc, status);
+
+                skb->dev = dev;
+                skb_put(skb, pkt_size);
+                skb->protocol = eth_type_trans(skb, dev);
+
+                if (skb->pkt_type == PACKET_MULTICAST)
+                        RTLDEV->stats.multicast++;
+
+                if (rtl8125_rx_vlan_skb(tp, desc, skb) < 0)
+                        rtl8125_rx_skb(tp, skb, ring->index);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
+                dev->last_rx = jiffies;
+#endif //LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
+                RTLDEV->stats.rx_bytes += pkt_size;
+                RTLDEV->stats.rx_packets++;
         }
 
         count = cur_rx - ring->cur_rx;
