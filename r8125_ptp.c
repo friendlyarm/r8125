@@ -92,18 +92,11 @@ static int _rtl8125_phc_settime(struct rtl8125_private *tp, const struct timespe
         return 0;
 }
 
-#if 0
 static int _rtl8125_phc_adjtime(struct rtl8125_private *tp, s64 delta)
 {
-        struct timespec64 now, then = ns_to_timespec64(delta);
-        u32 nsec;
-        u64 sec;
-
-        _rtl8125_phc_gettime(tp, &now);
-        now = timespec64_add(now, then);
-
-        nsec = now.tv_nsec & 0x3fffffff;
-        sec = now.tv_sec & 0x0000ffffffffffff;
+        struct timespec64 then = ns_to_timespec64(delta);
+        u32 nsec = then.tv_nsec & 0x3fffffff;
+        u64 sec = then.tv_sec & 0x0000ffffffffffff;
 
         /* nanoseconds */
         //0x6808[29:0]
@@ -114,28 +107,25 @@ static int _rtl8125_phc_adjtime(struct rtl8125_private *tp, s64 delta)
         RTL_W32(tp, PTP_SOFT_CONFIG_Time_S_8125, sec);
         RTL_W16(tp, PTP_SOFT_CONFIG_Time_S_8125 + 4, (sec >> 32));
 
-        //adjust local time
-        //RTL_W16(tp, PTP_TIME_CORRECT_CMD_8125, (PTP_CMD_DRIFT_LOCAL_TIME | PTP_EXEC_CMD));
+        // Command hardware to apply the delta
         RTL_W16(tp, PTP_TIME_CORRECT_CMD_8125, (PTP_CMD_SET_LOCAL_TIME | PTP_EXEC_CMD));
 
         return 0;
 }
-#endif
 
 static int rtl8125_phc_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
         struct rtl8125_private *tp = container_of(ptp, struct rtl8125_private, ptp_clock_info);
         unsigned long flags;
-        //int ret = 0;
+        int ret = 0;
 
-        //netif_info(tp, drv, tp->dev, "phc adjust time\n");
+        netif_dbg(tp, drv, tp->dev, "%s(%lld)\n", __func__, delta);
 
         spin_lock_irqsave(&tp->lock, flags);
-        //ret = _rtl8125_phc_adjtime(tp, delta);
-        tp->ptp_adjust += delta;
+        ret = _rtl8125_phc_adjtime(tp, delta);
         spin_unlock_irqrestore(&tp->lock, flags);
 
-        return 0;
+        return ret;
 }
 
 /*
@@ -388,10 +378,6 @@ static int rtl8125_hwtstamp_enable(struct rtl8125_private *tp, bool enable)
                 RTL_W16(tp, PTP_CTRL_8125, ptp_ctrl);
 
                 //set system time
-                /*
-                if (ktime_to_timespec64_cond(ktime_get_real(), &ts64))
-                _rtl8125_phc_settime(tp, timespec64_to_timespec(ts64));
-                */
                 ktime_get_real_ts64(&ts64);
                 ts64.tv_nsec += tp->ptp_adjust;
                 _rtl8125_phc_settime(tp, &ts64);
