@@ -2122,7 +2122,7 @@ static void ClearAndSetEthPhyOcpBit(struct rtl8125_private *tp, u16 addr, u16 cl
         mdio_direct_write_phy_ocp(tp, addr, PhyRegValue);
 }
 
-void ClearEthPhyOcpBit(struct rtl8125_private *tp, u16 addr, u16 mask)
+static void ClearEthPhyOcpBit(struct rtl8125_private *tp, u16 addr, u16 mask)
 {
         ClearAndSetEthPhyOcpBit(tp,
                                 addr,
@@ -2131,7 +2131,7 @@ void ClearEthPhyOcpBit(struct rtl8125_private *tp, u16 addr, u16 mask)
                                );
 }
 
-void SetEthPhyOcpBit(struct rtl8125_private *tp,  u16 addr, u16 mask)
+static void SetEthPhyOcpBit(struct rtl8125_private *tp,  u16 addr, u16 mask)
 {
         ClearAndSetEthPhyOcpBit(tp,
                                 addr,
@@ -12274,7 +12274,7 @@ rtl8125_link_timer(struct timer_list *t)
 }
 */
 
-int
+static int __maybe_unused
 rtl8125_enable_msix(struct rtl8125_private *tp)
 {
         int i, nvecs = 0;
@@ -12303,7 +12303,8 @@ out:
         return nvecs;
 }
 
-void rtl8125_dump_msix_tbl(struct rtl8125_private *tp)
+static void __maybe_unused
+rtl8125_dump_msix_tbl(struct rtl8125_private *tp)
 {
         void __iomem *ioaddr;
 
