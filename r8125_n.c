@@ -13840,13 +13840,18 @@ rtl8125_alloc_rx_skb(struct rtl8125_private *tp,
                      struct sk_buff **sk_buff,
                      struct RxDesc *desc,
                      int rx_buf_sz,
-                     const u32 cur_rx)
+                     const u32 cur_rx,
+                     u8 in_intr)
 {
         struct sk_buff *skb;
         dma_addr_t mapping;
         int ret = 0;
 
-        skb = RTL_ALLOC_SKB_INTR(&tp->r8125napi[ring->index].napi, rx_buf_sz + RTK_RX_ALIGN);
+        if (in_intr)
+                skb = RTL_ALLOC_SKB_INTR(&tp->r8125napi[ring->index].napi, rx_buf_sz + RTK_RX_ALIGN);
+        else
+                skb = dev_alloc_skb(rx_buf_sz + RTK_RX_ALIGN);
+
         if (unlikely(!skb))
                 goto err_out;
 
@@ -13904,7 +13909,8 @@ rtl8125_rx_fill(struct rtl8125_private *tp,
                 struct rtl8125_rx_ring *ring,
                 struct net_device *dev,
                 u32 start,
-                u32 end)
+                u32 end,
+                u8 in_intr)
 {
         u32 cur;
 
@@ -13919,7 +13925,8 @@ rtl8125_rx_fill(struct rtl8125_private *tp,
                                            ring->Rx_skbuff + i,
                                            rtl8125_get_rxdesc(tp, ring->RxDescArray, i),
                                            tp->rx_buf_sz,
-                                           i
+                                           i,
+                                           in_intr
                                           );
                 if (ret < 0)
                         break;
@@ -14005,7 +14012,7 @@ rtl8125_init_ring(struct net_device *dev)
                 struct rtl8125_rx_ring *ring = &tp->rx_ring[i];
 
                 memset(ring->Rx_skbuff, 0x0, sizeof(ring->Rx_skbuff));
-                if (rtl8125_rx_fill(tp, ring, dev, 0, ring->num_rx_desc) != ring->num_rx_desc)
+                if (rtl8125_rx_fill(tp, ring, dev, 0, ring->num_rx_desc, 0) != ring->num_rx_desc)
                         goto err_out;
 
                 rtl8125_mark_as_last_descriptor(tp, rtl8125_get_rxdesc(tp, ring->RxDescArray, ring->num_rx_desc - 1));
@@ -15297,7 +15304,7 @@ rtl8125_rx_interrupt(struct net_device *dev,
         count = cur_rx - ring->cur_rx;
         ring->cur_rx = cur_rx;
 
-        delta = rtl8125_rx_fill(tp, ring, dev, ring->dirty_rx, ring->cur_rx);
+        delta = rtl8125_rx_fill(tp, ring, dev, ring->dirty_rx, ring->cur_rx, 1);
         if (!delta && count && netif_msg_intr(tp))
                 printk(KERN_INFO "%s: no Rx buffer allocated\n", dev->name);
         ring->dirty_rx += delta;
